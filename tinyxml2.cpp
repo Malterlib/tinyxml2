@@ -139,13 +139,15 @@ struct Entity {
     char value;
 };
 
-static const int NUM_ENTITIES = 5;
+static const int NUM_ENTITIES = 7;
 static const Entity entities[NUM_ENTITIES] = {
     { "quot", 4,	DOUBLE_QUOTE },
     { "amp", 3,		'&'  },
     { "apos", 4,	SINGLE_QUOTE },
     { "lt",	2, 		'<'	 },
-    { "gt",	2,		'>'	 }
+    { "gt",	2,		'>'	 },
+    { "#x0D",	4, 		'\r'	 },
+    { "#x0A",	4,		'\n'	 }
 };
 
 
@@ -2406,7 +2408,7 @@ XMLError XMLDocument::SaveFile( FILE* fp, bool compact )
     // Clear any error from the last save, otherwise it will get reported
     // for *this* call.
     ClearError();
-    XMLPrinter stream( fp, compact );
+    XMLPrinter stream( fp, compact ? PRINT_DIALECT_XCODE : PRINT_DIALECT_TINYXML );
     Print( &stream );
     return _errorID;
 }
@@ -2544,7 +2546,7 @@ void XMLDocument::PopDepth()
 	--_parsingDepth;
 }
 
-XMLPrinter::XMLPrinter( FILE* file, bool compact, int depth ) :
+XMLPrinter::XMLPrinter( FILE* file, PrintDialect printDialect, int depth ) :
     _elementJustOpened( false ),
     _stack(),
     _firstElement( true ),
@@ -2552,7 +2554,7 @@ XMLPrinter::XMLPrinter( FILE* file, bool compact, int depth ) :
     _depth( depth ),
     _textDepth( -1 ),
     _processEntities( true ),
-    _compactMode( compact ),
+    _printDialect( printDialect ),
     _buffer()
 {
     for( int i=0; i<ENTITY_RANGE; ++i ) {
@@ -2568,6 +2570,13 @@ XMLPrinter::XMLPrinter( FILE* file, bool compact, int depth ) :
     _restrictedEntityFlag[static_cast<unsigned char>('&')] = true;
     _restrictedEntityFlag[static_cast<unsigned char>('<')] = true;
     _restrictedEntityFlag[static_cast<unsigned char>('>')] = true;	// not required, but consistency is nice
+
+    if (printDialect == PRINT_DIALECT_VISUALSTUDIO) {
+        _entityFlag[static_cast<unsigned char>('\'')] = false;
+        _entityFlag[static_cast<unsigned char>('\"')] = false;
+        _restrictedEntityFlag[static_cast<unsigned char>('\r')] = true;
+        _restrictedEntityFlag[static_cast<unsigned char>('\n')] = true;
+    }
     _buffer.Push( 0 );
 }
 
@@ -2622,8 +2631,13 @@ void XMLPrinter::Putc( char ch )
 
 void XMLPrinter::PrintSpace( int depth )
 {
+    const char *space = "    ";
+    if (_printDialect == PRINT_DIALECT_VISUALSTUDIO)
+        space = "  ";
+    else if (_printDialect == PRINT_DIALECT_XCODE)
+        space = "   ";
     for( int i=0; i<depth; ++i ) {
-        Write( "    " );
+        Write(space);
     }
 }
 
@@ -2728,11 +2742,20 @@ void XMLPrinter::OpenElement( const char* name, bool compactMode )
 void XMLPrinter::PushAttribute( const char* name, const char* value )
 {
     TIXMLASSERT( _elementJustOpened );
-    Putc ( ' ' );
-    Write( name );
-    Write( "=\"" );
-    PrintString( value, false );
-    Putc ( '\"' );
+    if (_printDialect == PRINT_DIALECT_XCODE) {
+        Putc( '\n' );
+        PrintSpace( _depth );
+        Write( name );
+        Write( " = \"");
+        PrintString( value, false );
+        Write( "\"" );
+    } else {
+        Putc ( ' ' );
+        Write( name );
+        Write( "=\"" );
+        PrintString( value, false );
+        Putc ( '\"' );
+    }
 }
 
 
@@ -2789,11 +2812,23 @@ void XMLPrinter::CloseElement( bool compactMode )
     --_depth;
     const char* name = _stack.Pop();
 
-    if ( _elementJustOpened ) {
-        Write( "/>" );
+    if ( _elementJustOpened) {
+        if (_printDialect == PRINT_DIALECT_XCODE) {
+            Putc( '>' );
+            if ( _textDepth < 0 && !compactMode ) {
+                Putc( '\n' );
+                PrintSpace( _depth );
+            }
+            Write ( "</" );
+            Write ( name );
+            Write ( ">" );
+        } else if (_printDialect == PRINT_DIALECT_VISUALSTUDIO)
+            Write( " />" );
+        else
+            Write( "/>" );
     }
     else {
-        if ( _textDepth < 0 && !compactMode) {
+        if ( _textDepth < 0 && !compactMode ) {
             Putc( '\n' );
             PrintSpace( _depth );
         }
@@ -2827,6 +2862,12 @@ void XMLPrinter::PushText( const char* text, bool cdata )
     _textDepth = _depth-1;
 
     SealElementIfJustOpened();
+
+    if ( _printDialect == PRINT_DIALECT_VISUALSTUDIO && *text == 0 ) {
+        Print( "\n" );
+        PrintSpace( _textDepth );
+    }
+
     if ( cdata ) {
         Write( "<![CDATA[" );
         Write( text );
@@ -2896,7 +2937,7 @@ void XMLPrinter::PushText( double value )
 
 void XMLPrinter::PushComment( const char* comment )
 {
-    PrepareForNewNode( _compactMode );
+    PrepareForNewNode( _printDialect == PRINT_DIALECT_COMPACT );
 
     Write( "<!--" );
     Write( comment );
@@ -2906,7 +2947,7 @@ void XMLPrinter::PushComment( const char* comment )
 
 void XMLPrinter::PushDeclaration( const char* value )
 {
-    PrepareForNewNode( _compactMode );
+    PrepareForNewNode( _printDialect == PRINT_DIALECT_COMPACT );
 
     Write( "<?" );
     Write( value );
@@ -2916,7 +2957,7 @@ void XMLPrinter::PushDeclaration( const char* value )
 
 void XMLPrinter::PushUnknown( const char* value )
 {
-    PrepareForNewNode( _compactMode );
+    PrepareForNewNode( _printDialect == PRINT_DIALECT_COMPACT );
 
     Write( "<!" );
     Write( value );
@@ -2940,7 +2981,7 @@ bool XMLPrinter::VisitEnter( const XMLElement& element, const XMLAttribute* attr
     if ( element.Parent() ) {
         parentElem = element.Parent()->ToElement();
     }
-    const bool compactMode = parentElem ? CompactMode( *parentElem ) : _compactMode;
+    const bool compactMode = parentElem ? CompactMode( *parentElem ) : _printDialect == PRINT_DIALECT_COMPACT;
     OpenElement( element.Name(), compactMode );
     while ( attribute ) {
         PushAttribute( attribute->Name(), attribute->Value() );
