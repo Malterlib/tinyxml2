@@ -2025,6 +2025,13 @@ private:
     const XMLNode* _node;
 };
 
+enum PrintDialect {
+    PRINT_DIALECT_TINYXML
+    , PRINT_DIALECT_COMPACT
+    , PRINT_DIALECT_VISUALSTUDIO
+    , PRINT_DIALECT_XCODE
+};
+
 
 /**
 	Printing functionality. The XMLPrinter gives you more
@@ -2077,7 +2084,7 @@ public:
     	If 'compact' is set to true, then output is created
     	with only required whitespace and newlines.
     */
-    XMLPrinter( FILE* file=0, bool compact = false, int depth = 0 );
+    XMLPrinter( FILE* file=0, PrintDialect printDialect = PRINT_DIALECT_TINYXML, int depth = 0 );
     virtual ~XMLPrinter()	{}
 
     /** If streaming, write the BOM and declaration. */
@@ -2155,7 +2162,7 @@ public:
     }
 
 protected:
-	virtual bool CompactMode( const XMLElement& )	{ return _compactMode; }
+    virtual bool CompactMode( const XMLElement& )	{ return _printDialect == PRINT_DIALECT_COMPACT; }
 
 	/** Prints out the space before an element. You may override to change
 	    the space and tabs used. A PrintSpace() override should call Print().
@@ -2175,7 +2182,7 @@ private:
     int _depth;
     int _textDepth;
     bool _processEntities;
-	bool _compactMode;
+    PrintDialect _printDialect;
 
     enum {
         ENTITY_RANGE = 64,
